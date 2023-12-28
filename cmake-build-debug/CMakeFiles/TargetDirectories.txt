@@ -1,0 +1,4 @@
+/media/ldx/sd1/feature matching/cmake-build-debug/CMakeFiles/lib.dir
+/media/ldx/sd1/feature matching/cmake-build-debug/CMakeFiles/Feature_Matching.dir
+/media/ldx/sd1/feature matching/cmake-build-debug/CMakeFiles/edit_cache.dir
+/media/ldx/sd1/feature matching/cmake-build-debug/CMakeFiles/rebuild_cache.dir
