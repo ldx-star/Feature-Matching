@@ -39,7 +39,7 @@ void Sift::process() {
         std::cout << "SIFT: Detected " << _keypoints.size() << " keypoints" << std::endl;
     }
     if (_options.debug_output) {
-        std::cout << "SIFT: Localizing and filtering keypoints... "  << std::endl;
+        std::cout << "SIFT: Localizing and filtering keypoints... " << std::endl;
     }
     keypoint_localization();
 }
@@ -110,8 +110,8 @@ void Sift::extrema_detection() {
 /**
  * 
  * @param samples 
- * @param oi octave 阶数
- * @param si 有效dog的阶数
+ * @param oi 所在的octave阶数
+ * @param si 所在的dog阶数
  */
 void Sift::extrema_detection(cv::Mat *samples, int oi, int si) {
     const int w = samples[1].cols;
@@ -154,6 +154,99 @@ void Sift::extrema_detection(cv::Mat *samples, int oi, int si) {
     }
 }
 
+
+/**
+ * 亚像素精度求解
+ */
 void Sift::keypoint_localization() {
+    int num_keypoints = 0;
+    int num_singular = 0;
+    for (int i = 0; i < _keypoints.size(); i++) {
+        Keypoint kp(_keypoints[i]);
+        Octave const &oct(_octaves[kp.octave - _options.min_octave]);
+        int sample = (int) kp.sample;
+        cv::Mat dogs[3] = {oct.dog[sample + 0], oct.dog[sample + 1], oct.dog[sample + 2]};
+
+        int const w = dogs[0].cols;
+        int const h = dogs[0].rows;
+
+        int ir = (int) kp.row;
+        int ic = (int) kp.col;
+        int is = (int) kp.sample;
+        float delta_r, delta_c, delta_s;
+
+        float Dr, Dc, Ds;
+        float Drr, Dcc, Dss;
+        float Dcr, Dcs, Drs;
+        for (int i = 0; i < 5; i++) {
+            //最多迭代5次
+            Dr = (dogs[1].at<float>(ir + 1, ic) - dogs[1].at<float>(ir - 1, ic)) * 0.5f;
+            Dc = (dogs[1].at<float>(ir, ic + 1) - dogs[1].at<float>(ir, ic - 1)) * 0.5f;
+            Ds = (dogs[0].at<float>(ir, ic) - dogs[2].at<float>(ir, ic)) * 0.5f;
+            Drr = dogs[1].at<float>(ir + 1, ic) + dogs[1].at<float>(ir - 1, ic) - 2 * dogs[1].at<float>(ir, ic);
+            Dcc = dogs[1].at<float>(ir, ic + 1) + dogs[1].at<float>(ir, ic - 1) - 2 * dogs[1].at<float>(ir, ic);
+            Dss = dogs[0].at<float>(ir, ic) + dogs[2].at<float>(ir, ic) - 2 * dogs[1].at<float>(ir, ic);
+            Dcr = ((dogs[1].at<float>(ir + 1, ic + 1) + dogs[1].at<float>(ir + 1, ic - 1)) - (dogs[1].at<float>(ir + 1, ic + 1) + dogs[1].at<float>(ir - 1, ic + 1))) * 0.25f;
+            Dcs = ((dogs[0].at<float>(ir, ic + 1) + dogs[2].at<float>(ir, ic + 1)) - (dogs[0].at<float>(ir, ic - 1) + dogs[2].at<float>(ir, ic + 1))) * 0.25f;
+            Drs = ((dogs[0].at<float>(ir + 1, ic) + dogs[2].at<float>(ir + 1, ic)) - (dogs[0].at<float>(ir - 1, ic) + dogs[2].at<float>(ir + 1, ic))) * 0.25f;
+
+            //构造hessian矩阵
+            Eigen::Matrix<float, 3, 3> H;
+            H << Dcc, Dcr, Dcs, Dcr, Drr, Drs, Dcs, Drs, Dss;
+            float detH = H.determinant();
+            if (MATH_EPSILON_EQ(detH, 0.0f, 1e-15f)) {
+                //行列式为0
+                num_singular++;
+                delta_c = delta_r = delta_s = 0.0f;
+                break;
+            }
+            Eigen::Matrix<float, 3, 3> H_inv;
+            H_inv = H.inverse();
+            Eigen::Vector3f b(-Dc, -Dr, -Ds);
+            Eigen::Vector3f delta = H_inv * b;
+            delta_c = delta[0];
+            delta_r = delta[1];
+            delta_s = delta[2];
+
+            //如果 |delta| < 0.6f 说明当前的极值点是正确的，不需要变 d = 0
+            int dc = (delta_c >0.6f && ic < w - 2) * 1 + (delta_c < -0.6f && ic > 1) * -1;
+            int dr = (delta_r > 0.6f && ir < h - 2) * 1 + (delta_r < -0.6f && ir > 1) * -1;
+            if(dc != 0 || dr !=0){
+                ic += dc;
+                ir += dr;
+                continue;
+            }
+            break;
+        }
+        float val = dogs[1].at<float>(ic,ir) + 0.5f * (Dc*delta_c + Dr * delta_r + Ds * delta_s);
+
+        //去除边缘点
+        float hessian_trace = Dcc+Drr;
+        float hessian_del = Dcc*Drr - Dcr*Dcr;
+        float score = powf(hessian_trace,2) / hessian_del;
+        float score_thres =powf(_options.edge_ratio_threshold+1,2) / _options.edge_ratio_threshold;
+
+        kp.col = (float)ic+delta_c;
+        kp.row = (float)ir+delta_r;
+        kp.sample = (float)ic+delta_s;
+
+        if(fabs(val) < _options.contrast_threshold
+            || score < score_thres
+            || score < 0.0f
+            || fabs(delta_c) > 1.5f || fabs(delta_r) > 1.5f || fabs(delta_s) > 1.0f
+            || kp.col < 0.0f || kp.col > w-1
+            || kp.row < 0.0f || kp.row > h-1
+            || kp.sample < -1.0f || kp.sample > _options.num_samples_per_octave
+            )
+            continue;
+
+        _keypoints[num_keypoints++] = kp;
+    }
+    _keypoints.resize(num_keypoints);
+    if (_options.debug_output && num_singular > 0)
+    {
+        std::cout << "SIFT: Warning: " << num_singular
+                  << " singular matrices detected!" << std::endl;
+    }
 
 }

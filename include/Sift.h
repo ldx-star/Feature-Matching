@@ -8,8 +8,10 @@
 #include<iostream>
 #include<vector>
 #include<opencv2/opencv.hpp>
+#include<Eigen/Core>
+#include<Eigen/Dense>
+#include "defines.h"
 
-#endif //FEATURE_MATCHING_SIFT_H
 
 class Sift {
 public:
@@ -35,6 +37,11 @@ public:
          */
         float inherent_blur_sigma;
         float base_blur_sigma;
+
+        /// 进行亚像素精度定位时，对极值点处的DoG值的阈值
+        float contrast_threshold;
+        /// 用于消除边缘响应
+        float edge_ratio_threshold;
     };
 
 
@@ -62,7 +69,7 @@ public:
 protected:
     struct Octave{
         typedef std::vector<cv::Mat> ImageVector;
-        ImageVector img; // S + 3
+        ImageVector img; //高斯空间  S + 3
         ImageVector dog; // S + 2
         ImageVector grad; //梯度图
         ImageVector origin; // 原始图
@@ -92,5 +99,9 @@ inline Sift::Options::Options()
     min_octave(0),
     max_octave(4),
     inherent_blur_sigma(0.5),
-    base_blur_sigma(1.6)
+    base_blur_sigma(1.6),
+    contrast_threshold(-1.0f),
+    edge_ratio_threshold(10.0f)
     {}
+
+#endif //FEATURE_MATCHING_SIFT_H

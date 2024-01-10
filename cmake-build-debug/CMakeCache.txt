@@ -215,6 +215,9 @@ CMAKE_TAPI:FILEPATH=CMAKE_TAPI-NOTFOUND
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
 
+//The directory containing a CMake configuration file for Eigen3.
+Eigen3_DIR:PATH=/usr/lib/cmake/eigen3
+
 //Value Computed by CMake
 Feature_Matching_BINARY_DIR:STATIC=/media/ldx/sd1/feature matching/cmake-build-debug
 
