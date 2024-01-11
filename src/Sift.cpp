@@ -42,6 +42,18 @@ void Sift::process() {
         std::cout << "SIFT: Localizing and filtering keypoints... " << std::endl;
     }
     keypoint_localization();
+    if (_options.debug_output) {
+        std::cout << "SIFT: Retained " << _keypoints.size() << " stable " << std::endl;
+    }
+    // 清除dog
+    for (int i = 0; i < _octaves.size(); i++) {
+        _octaves[i].dog.clear();
+    }
+    if (_options.verbose_output) {
+        std::cout << "SIFT: Generating keypoint descriptors" << std::endl;
+    }
+    descriptor_generation();
+
 }
 
 void Sift::create_octaves() {
@@ -209,44 +221,264 @@ void Sift::keypoint_localization() {
             delta_s = delta[2];
 
             //如果 |delta| < 0.6f 说明当前的极值点是正确的，不需要变 d = 0
-            int dc = (delta_c >0.6f && ic < w - 2) * 1 + (delta_c < -0.6f && ic > 1) * -1;
+            int dc = (delta_c > 0.6f && ic < w - 2) * 1 + (delta_c < -0.6f && ic > 1) * -1;
             int dr = (delta_r > 0.6f && ir < h - 2) * 1 + (delta_r < -0.6f && ir > 1) * -1;
-            if(dc != 0 || dr !=0){
+            if (dc != 0 || dr != 0) {
                 ic += dc;
                 ir += dr;
                 continue;
             }
             break;
         }
-        float val = dogs[1].at<float>(ic,ir) + 0.5f * (Dc*delta_c + Dr * delta_r + Ds * delta_s);
+        float val = dogs[1].at<float>(ic, ir) + 0.5f * (Dc * delta_c + Dr * delta_r + Ds * delta_s);
 
         //去除边缘点
-        float hessian_trace = Dcc+Drr;
-        float hessian_del = Dcc*Drr - Dcr*Dcr;
-        float score = powf(hessian_trace,2) / hessian_del;
-        float score_thres =powf(_options.edge_ratio_threshold+1,2) / _options.edge_ratio_threshold;
+        float hessian_trace = Dcc + Drr;
+        float hessian_del = Dcc * Drr - Dcr * Dcr;
+        float score = powf(hessian_trace, 2) / hessian_del;
+        float score_thres = powf(_options.edge_ratio_threshold + 1, 2) / _options.edge_ratio_threshold;
 
-        kp.col = (float)ic+delta_c;
-        kp.row = (float)ir+delta_r;
-        kp.sample = (float)ic+delta_s;
+        kp.col = (float) ic + delta_c;
+        kp.row = (float) ir + delta_r;
+        kp.sample = (float) is + delta_s;
 
-        if(fabs(val) < _options.contrast_threshold
+        if (fabs(val) < _options.contrast_threshold
             || score < score_thres
             || score < 0.0f
             || fabs(delta_c) > 1.5f || fabs(delta_r) > 1.5f || fabs(delta_s) > 1.0f
-            || kp.col < 0.0f || kp.col > w-1
-            || kp.row < 0.0f || kp.row > h-1
+            || kp.col < 0.0f || kp.col > w - 1
+            || kp.row < 0.0f || kp.row > h - 1
             || kp.sample < -1.0f || kp.sample > _options.num_samples_per_octave
-            )
+                )
             continue;
 
         _keypoints[num_keypoints++] = kp;
     }
     _keypoints.resize(num_keypoints);
-    if (_options.debug_output && num_singular > 0)
-    {
+    if (_options.debug_output && num_singular > 0) {
         std::cout << "SIFT: Warning: " << num_singular
                   << " singular matrices detected!" << std::endl;
     }
+}
 
+void Sift::descriptor_generation() {
+    if (_octaves.empty()) {
+        throw std::runtime_error("Octaves not available");
+    }
+    if (_keypoints.empty()) return;
+    _descriptors.clear();
+    _descriptors.reserve(_keypoints.size() * 3 / 2);
+
+    ///计算每个octave中每个高斯空间的梯度大小和梯度方向
+    int octave_index = _keypoints[0].octave;
+    Octave *octave = &_octaves[octave_index - _options.min_octave];
+    generate_grad_ori_images(octave);
+    for (int i = 0; i < _keypoints.size(); i++) {
+        const Keypoint &kp = _keypoints[i];
+        if (kp.octave > octave_index) {
+            //当前关键点属于另一个octave
+            octave->grad.clear();
+            octave->ori.clear();
+            octave_index = kp.octave;
+            octave = &_octaves[octave_index - _options.min_octave];
+            generate_grad_ori_images(octave);
+        } else if (kp.octave < octave_index) throw std::runtime_error("Decreasing octave index");
+        //统计直方图，找到特征主方向
+        std::vector<float> orientations;
+        orientations.reserve(8);
+        orientation_assignment(kp, octave, orientations);
+        for (int j = 0; j < orientations.size(); j++) {
+            Descriptor desc;
+            const float scale_factor = std::pow(2.0f, kp.octave);//octave变大尺度缩小两倍，特征描述时需要还原回来
+            desc.x = scale_factor * (kp.col + 0.5f) - 0.5f;
+            desc.y = scale_factor * (kp.row + 0.5f) - 0.5f;
+            desc.scale = keypoint_absolute_scale(kp);
+            desc.orientation = orientations[j];
+            if (descriptor_assignment(kp, desc, octave)) _descriptors.push_back(desc);
+        }
+
+    }
+
+}
+
+/**
+ *  计算octave中的梯度和方向
+ * @param octave
+ */
+
+void Sift::generate_grad_ori_images(Sift::Octave *octave) {
+    octave->grad.clear();
+    octave->grad.reserve(octave->img.size());
+    octave->ori.clear();
+    octave->ori.reserve(octave->img.size());
+
+    const int width = octave->img[0].cols;
+    const int height = octave->img[0].rows;
+
+    for (int i = 0; i < octave->img.size(); i++) {
+        cv::Mat img = octave->img[i];
+        cv::Mat grad = cv::Mat::zeros(cv::Size(width, height), CV_32F);
+        cv::Mat ori = cv::Mat::zeros(cv::Size(width, height), CV_32F);
+        ///opencv中 cv::Size(宽（列），高（行）)  cv::Mat.at(行，列)
+        for (int y = 1; y < height - 1; y++) {
+            for (int x = 1; x < width - 1; x++) {
+                float dx = (img.at<float>(y, x + 1) - img.at<float>(y, x - 1)) * 0.5f;
+                float dy = (img.at<float>(y + 1, x) - img.at<float>(y - 1, x)) * 0.5f;
+
+                //梯度方向
+                float atan2f = std::atan2(dy, dx);
+                grad.at<float>(y, x) = std::sqrt(dx * dx + dy * dy);
+                ori.at<float>(y, x) = atan2f < 0.0 ? atan2f + CV_PI * 2.0f : atan2f;
+            }
+        }
+        octave->grad.push_back(grad);
+        octave->ori.push_back(ori);
+    }
+
+}
+
+/**
+ * 找到主方向
+ * @param kp
+ * @param octave
+ * @param orientations
+ */
+void Sift::orientation_assignment(const Sift::Keypoint &kp, const Sift::Octave *octave, std::vector<float> &orientations) {
+    const int nbins = 36;//将2pi分为36个区域
+    const float nbinsf = 36.0f;
+    float hist[nbins] = {}; //36-bin 直方图
+    const int ix = static_cast<int>(kp.col + 0.5f); //+0.5 是为了做到四舍五入
+    const int iy = static_cast<int>(kp.row + 0.5f);
+    const int is = static_cast<int>(std::round(kp.sample));
+    const float sigma = keypoint_relative_scale(kp);
+    cv::Mat grad(octave->grad[is + 1]);
+    cv::Mat ori(octave->ori[is + 1]);
+    const int width = grad.cols;
+    const int height = grad.rows;
+
+    float sigma_factor = 1.5f;
+    int window = static_cast<int>(sigma * sigma_factor * 3.0f);
+    if (ix < window || ix + window >= width || iy < window || iy + window >= height) {
+        return;
+    }
+    const float dxf = kp.col - static_cast<float>(ix);
+    const float dyf = kp.row - static_cast<float>(iy);
+    const float maxdist = (window * window) + 0.5f;
+
+    for (int dy = -window; dy <= window; dy++) {
+        for (int dx = -window; dx <= window; dx++) {
+            float dist = powf(dx - dxf, 2) + powf(dy - dyf, 2);
+            if (dist > maxdist) continue; // 内切圆内有效
+            float gm = grad.at<float>(iy + dy, ix + dx);
+            float go = ori.at<float>(iy + dy, ix + dx);
+            float gaussian_sigma = sigma * sigma_factor;
+            int gaussian_window = int(gaussian_sigma * 6) % 2 == 0 ? int(gaussian_sigma * 6) + 1 : int(gaussian_sigma * 6);
+            cv::Mat gaussian_kernel = cv::getGaussianKernel(gaussian_window, gaussian_sigma, CV_32F);
+            cv::Mat gaussian_kernel2D = gaussian_kernel * gaussian_kernel.t();
+            int gaussian_center = static_cast<int>(gaussian_window / 2) + 1;
+            float weight = gaussian_kernel2D.at<float>(gaussian_center + dy, gaussian_center + dx);
+            int bin = static_cast<int>(nbinsf * go / (2.0f * CV_PI));
+            if (bin < 0) bin = 0;
+            else if (bin > nbins - 1) bin = nbins - 1;
+            hist[bin] += gm * weight;
+
+        }
+    }
+
+    // Smooth histogram
+    for (int i = 0; i < 6; i++) {
+        float first = hist[0];
+        float prev = hist[nbins - 1];
+        for (int j = 0; j < nbins - 1; j++) {
+            float current = hist[j];
+            hist[j] = (prev + current + hist[j + 1]) / 3.0f;
+            prev = current;
+        }
+        hist[nbins - 1] = (prev + hist[nbins - 1] + first) / 3.0f;
+    }
+
+    //选出主方向
+    float maxh = *std::max_element(hist, hist + nbins);
+    for (int i = 0; i < nbins; i++) {
+        float h0 = hist[(i + nbins - 1) % nbins];
+        float h1 = hist[i];
+        float h2 = hist[(i + 1) % nbins];
+        //局部最大值
+        if (h1 <= 0.8f * maxh || h1 <= h0 || h1 <= h2) {
+            continue;
+        }
+        /*
+         * f(x) = ax^2 + bx + c, f(-1) = h0, f(0) = h1, f(1) = h2
+         * --> a = 1/2 (h0 - 2h1 + h2), b = 1/2 (h2 - h0), c = h1.
+         * x = f'(x) = 2ax + b = 0 --> x = -1/2 * (h2 - h0) / (h0 - 2h1 + h2)
+         */
+        float x = -0.5f * (h2 - h0) / (h0 - 2.0f * h1 + h2);
+        float o = 2.0 * CV_PI * (x + float(i) + 0.5f) / nbinsf;
+        orientations.push_back(o);
+    }
+}
+
+
+/*
+ * scale = sigma0 * 2^(octave + (s+1) / S)
+ */
+float Sift::keypoint_relative_scale(const Sift::Keypoint &kp) const {
+    return _options.base_blur_sigma * std::pow(2.0f, (kp.sample + 1.0f) / _options.num_samples_per_octave);
+}
+
+float Sift::keypoint_absolute_scale(const Keypoint &kp) const {
+    return _options.base_blur_sigma * std::pow(2.0f, kp.octave + (kp.sample + 1.0f) / _options.num_samples_per_octave);
+}
+
+bool Sift::descriptor_assignment(const Sift::Keypoint &kp, Sift::Descriptor &desc, const Sift::Octave *octave) {
+    const int PXB = 4; // Pixel bins with 4*4 bins
+    const int OHB = 8;// Orientation histogram with 8 bins
+
+    const int ix = static_cast<int>(kp.col + 0.5f);
+    const int iy = static_cast<int>(kp.row + 0.5f);
+    const int is = static_cast<int>(std::round(kp.sample));
+    const float dxf = kp.col - static_cast<float>(ix);
+    const float dyf = kp.row - static_cast<float>(iy);
+    const float sigma = keypoint_relative_scale(kp);
+
+    cv::Mat grad(octave->grad[is + 1]);
+    cv::Mat ori(octave->ori[is + 1]);
+    const int width = grad.cols;
+    const int height = grad.rows;
+    memset(desc.data, 0, sizeof desc.data);
+
+    const float sino = std::sin(desc.orientation);
+    const float coso = std::cos(desc.orientation);
+
+    /*
+     * Compute window size.
+     * Each spacial bin has an extension of 3 * sigma (sigma is the scale
+     * of the keypoint). For interpolation we need another half bin at
+     * both ends in each dimension. And since the window can be arbitrarily
+     * rotated, we need to multiply with sqrt(2). The window size is:
+     * 2W = sqrt(2) * 3 * sigma * (PXB + 1).
+     */
+    const float binsize = 3.0f * sigma; // 每个bin的大小
+    int win = sqrt(2) * binsize * (float) (PXB + 1) * 0.5f;
+    if (ix < win || ix + win >= width || iy < win || iy + win >= height) return false;
+    for(int dy = -win; dy <= win ;dy++){
+        for(int dx = -win; dx <= win; dx++){
+            float const mod = grad.at<float>(iy + dy,ix + dx);
+            float const angle = ori.at<float>(iy+dy,ix+dx);
+            float theta = angle - desc.orientation; // 当前像素梯度方向与主方向差值
+            if(theta < 0.0f) theta += 2.0f * CV_PI;
+
+            const float winx = (float)dx -dxf;
+            const float winy = (float)dy -dyf;
+
+            float binoff = (float)(PXB-1) / 2.0f;
+            float binx = (coso * winx + sino * winy) / binsize + binoff;
+            float biyx = (-sino * winx + coso * winy) / binsize + binoff;
+
+
+        }
+
+
+    }
+    return true;
 }
