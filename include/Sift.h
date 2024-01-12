@@ -6,6 +6,7 @@
 #define FEATURE_MATCHING_SIFT_H
 
 #include<iostream>
+#include <algorithm>
 #include<vector>
 #include<opencv2/opencv.hpp>
 #include<Eigen/Core>

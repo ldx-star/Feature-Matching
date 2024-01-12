@@ -447,8 +447,8 @@ bool Sift::descriptor_assignment(const Sift::Keypoint &kp, Sift::Descriptor &des
     const int height = grad.rows;
     memset(desc.data, 0, sizeof desc.data);
 
-    const float sino = std::sin(desc.orientation);
-    const float coso = std::cos(desc.orientation);
+    const float sino = std::sin(0);
+    const float coso = std::cos(0);
 
     /*
      * Compute window size.
@@ -461,24 +461,84 @@ bool Sift::descriptor_assignment(const Sift::Keypoint &kp, Sift::Descriptor &des
     const float binsize = 3.0f * sigma; // 每个bin的大小
     int win = sqrt(2) * binsize * (float) (PXB + 1) * 0.5f;
     if (ix < win || ix + win >= width || iy < win || iy + win >= height) return false;
-    for(int dy = -win; dy <= win ;dy++){
-        for(int dx = -win; dx <= win; dx++){
-            float const mod = grad.at<float>(iy + dy,ix + dx);
-            float const angle = ori.at<float>(iy+dy,ix+dx);
+    for (int dy = -win; dy <= win; dy++) {
+        for (int dx = -win; dx <= win; dx++) {
+            float const mod = grad.at<float>(iy + dy, ix + dx);
+            float const angle = ori.at<float>(iy + dy, ix + dx);
             float theta = angle - desc.orientation; // 当前像素梯度方向与主方向差值
-            if(theta < 0.0f) theta += 2.0f * CV_PI;
+            if (theta < 0.0f) theta += 2.0f * CV_PI;
 
-            const float winx = (float)dx -dxf;
-            const float winy = (float)dy -dyf;
+            const float winx = (float) dx - dxf;
+            const float winy = (float) dy - dyf;
 
-            float binoff = (float)(PXB-1) / 2.0f;
+            float binoff = (float) (PXB - 1) / 2.0f;
             float binx = (coso * winx + sino * winy) / binsize + binoff;
-            float biyx = (-sino * winx + coso * winy) / binsize + binoff;
+            float biny = (-sino * winx + coso * winy) / binsize + binoff;
+            float bint = theta * (float) OHB / (2.0f * CV_PI) - 0.5f;
+            float gaussian_sigma = 0.5 * (float) PXB;
+            int gaussian_window = int(gaussian_sigma * 6) % 2 == 0 ? int(gaussian_sigma * 6) + 1 : int(gaussian_sigma * 6);
+            cv::Mat gaussian_kernel = cv::getGaussianKernel(gaussian_window, gaussian_sigma, CV_32F);
+            cv::Mat gaussian_kernel2D = gaussian_kernel * gaussian_kernel.t();
+            int gaussian_center = static_cast<int>(gaussian_window / 2) + 1;
 
+            float gaussian_weight = gaussian_kernel2D.at<float>(gaussian_center + (biny - binoff), gaussian_center + (binx - binoff));
+            float contrib = mod * gaussian_weight;
 
+            /*
+           * Distribute values into bins (using trilinear interpolation).
+           * Each sample is inserted into 8 bins. Some of these bins may
+           * not exist, because the sample is outside the keypoint window.
+           */
+            int bxi[2] = {(int) std::floor(binx), (int) std::floor(binx) + 1};
+            int byi[2] = {(int) std::floor(biny), (int) std::floor(biny) + 1};
+            int bti[2] = {(int) std::floor(bint), (int) std::floor(bint) + 1};
+
+            float weights[3][2] = {
+                    {(float) bxi[1] - binx, 1.0f - ((float) bxi[1] - binx)},
+                    {(float) byi[1] - biny, 1.0f - ((float) byi[1] - biny)},
+                    {(float) bti[1] - bint, 1.0f - ((float) bti[1] - bint)}
+            };
+            //0-(OHB-1) 循环
+            if (bti[0] < 0) bti[0] += OHB;
+            if (bti[1] >= 0) bti[1] -= OHB;
+
+            const int xstride = OHB;
+            const int ystride = OHB * PXB;
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    for (int t = 0; t < 2; t++) {
+                        if (bxi[x] < 0 || bxi[x] >= PXB || byi[y] < 0 || byi[y] >= PXB) continue;
+                        int idx = bti[t] + bxi[x] * xstride + byi[y] * ystride;
+                        std::cout << "idx: " << idx << std::endl;
+                        desc.data[idx] += contrib * weights[0][x] * weights[1][y] * weights[2][t];
+                    }
+                }
+            }
         }
-
-
     }
+
+
+    //normalize
+    float init = 0;
+    for (float i : desc.data) {
+        init = init + i * i;
+    }
+    for (float & i : desc.data) {
+        i /= std::sqrt(init);
+    }
+
+    /* Truncate descriptor values to 0.2. */
+    for (float & i : desc.data) {
+        i = std::min(i, 0.2f);
+    }
+
+    //normalize
+    for (float i : desc.data) {
+        init = init + i * i;
+    }
+    for (float & i : desc.data) {
+        i /= std::sqrt(init);
+    }
+
     return true;
 }
