@@ -9,6 +9,9 @@ Sift::Sift(const Sift::Options &options)
         throw std::invalid_argument("Invalid octave range");
     }
     if (this->_options.debug_output) this->_options.verbose_output = true;
+
+    if (_options.contrast_threshold < 0.0f) _options.contrast_threshold = 0.02f / static_cast<float>(_options.num_samples_per_octave);
+
 }
 
 void Sift::set_image(cv::Mat img) {
@@ -20,6 +23,7 @@ void Sift::set_image(cv::Mat img) {
         cv::cvtColor(img, img, cv::COLOR_BGR2GRAY);
     }
     img.convertTo(img, CV_32F);
+    img /= 255;
     _orig = img;
 }
 
@@ -38,6 +42,7 @@ void Sift::process() {
     if (_options.debug_output) {
         std::cout << "SIFT: Detected " << _keypoints.size() << " keypoints" << std::endl;
     }
+//    keypoints_show();
     if (_options.debug_output) {
         std::cout << "SIFT: Localizing and filtering keypoints... " << std::endl;
     }
@@ -53,6 +58,15 @@ void Sift::process() {
         std::cout << "SIFT: Generating keypoint descriptors" << std::endl;
     }
     descriptor_generation();
+    if (_options.debug_output) {
+        std::cout << "SIFT: Generated " << _descriptors.size() << " descriptorsk" << std::endl;
+    }
+    if (this->_options.verbose_output) {
+        std::cout << "SIFT: Generated " << _descriptors.size() << " descriptors from " << _keypoints.size() << " keypoints"<< std::endl;
+    }
+
+    /* Free memory. */
+    _octaves.clear();
 
 }
 
@@ -146,7 +160,7 @@ void Sift::extrema_detection(cv::Mat *samples, int oi, int si) {
                     if (samples[l].at<float>(r + noff_r[i], c + noff_c[i]) >= center_value) {
                         largest = false;
                     }
-                    if (samples[l].at<float>(r + noff_r[i], c + noff_c[i]) >= center_value) {
+                    if (samples[l].at<float>(r + noff_r[i], c + noff_c[i]) <= center_value) {
                         smallest = false;
                     }
                 }
@@ -194,17 +208,20 @@ void Sift::keypoint_localization() {
             //最多迭代5次
             Dr = (dogs[1].at<float>(ir + 1, ic) - dogs[1].at<float>(ir - 1, ic)) * 0.5f;
             Dc = (dogs[1].at<float>(ir, ic + 1) - dogs[1].at<float>(ir, ic - 1)) * 0.5f;
-            Ds = (dogs[0].at<float>(ir, ic) - dogs[2].at<float>(ir, ic)) * 0.5f;
+            Ds = (dogs[2].at<float>(ir, ic) - dogs[0].at<float>(ir, ic)) * 0.5f;
+
             Drr = dogs[1].at<float>(ir + 1, ic) + dogs[1].at<float>(ir - 1, ic) - 2 * dogs[1].at<float>(ir, ic);
             Dcc = dogs[1].at<float>(ir, ic + 1) + dogs[1].at<float>(ir, ic - 1) - 2 * dogs[1].at<float>(ir, ic);
-            Dss = dogs[0].at<float>(ir, ic) + dogs[2].at<float>(ir, ic) - 2 * dogs[1].at<float>(ir, ic);
-            Dcr = ((dogs[1].at<float>(ir + 1, ic + 1) + dogs[1].at<float>(ir + 1, ic - 1)) - (dogs[1].at<float>(ir + 1, ic + 1) + dogs[1].at<float>(ir - 1, ic + 1))) * 0.25f;
-            Dcs = ((dogs[0].at<float>(ir, ic + 1) + dogs[2].at<float>(ir, ic + 1)) - (dogs[0].at<float>(ir, ic - 1) + dogs[2].at<float>(ir, ic + 1))) * 0.25f;
-            Drs = ((dogs[0].at<float>(ir + 1, ic) + dogs[2].at<float>(ir + 1, ic)) - (dogs[0].at<float>(ir - 1, ic) + dogs[2].at<float>(ir + 1, ic))) * 0.25f;
+            Dss = dogs[2].at<float>(ir, ic) + dogs[0].at<float>(ir, ic) - 2 * dogs[1].at<float>(ir, ic);
+
+            Dcr = ((dogs[1].at<float>(ir + 1, ic + 1) + dogs[1].at<float>(ir - 1, ic + 1)) - (dogs[1].at<float>(ir - 1, ic + 1) + dogs[1].at<float>(ir + 1, ic - 1))) * 0.25f;
+            Dcs = ((dogs[0].at<float>(ir, ic + 1) + dogs[2].at<float>(ir, ic + 1)) - (dogs[0].at<float>(ir, ic + 1) + dogs[2].at<float>(ir, ic - 1))) * 0.25f;
+            Drs = ((dogs[0].at<float>(ir + 1, ic) + dogs[2].at<float>(ir + 1, ic)) - (dogs[0].at<float>(ir + 1, ic) + dogs[2].at<float>(ir -1, ic))) * 0.25f;
 
             //构造hessian矩阵
             Eigen::Matrix<float, 3, 3> H;
             H << Dcc, Dcr, Dcs, Dcr, Drr, Drs, Dcs, Drs, Dss;
+//            std::cout << H << std::endl;
             float detH = H.determinant();
             if (MATH_EPSILON_EQ(detH, 0.0f, 1e-15f)) {
                 //行列式为0
@@ -230,7 +247,7 @@ void Sift::keypoint_localization() {
             }
             break;
         }
-        float val = dogs[1].at<float>(ic, ir) + 0.5f * (Dc * delta_c + Dr * delta_r + Ds * delta_s);
+        float val = dogs[1].at<float>(ir, ic) + 0.5f * (Dc * delta_c + Dr * delta_r + Ds * delta_s);
 
         //去除边缘点
         float hessian_trace = Dcc + Drr;
@@ -243,7 +260,7 @@ void Sift::keypoint_localization() {
         kp.sample = (float) is + delta_s;
 
         if (fabs(val) < _options.contrast_threshold
-            || score < score_thres
+            || score > score_thres
             || score < 0.0f
             || fabs(delta_c) > 1.5f || fabs(delta_r) > 1.5f || fabs(delta_s) > 1.0f
             || kp.col < 0.0f || kp.col > w - 1
@@ -277,8 +294,10 @@ void Sift::descriptor_generation() {
         const Keypoint &kp = _keypoints[i];
         if (kp.octave > octave_index) {
             //当前关键点属于另一个octave
-            octave->grad.clear();
-            octave->ori.clear();
+            if (octave) {
+                octave->grad.clear();
+                octave->ori.clear();
+            }
             octave_index = kp.octave;
             octave = &_octaves[octave_index - _options.min_octave];
             generate_grad_ori_images(octave);
@@ -287,6 +306,7 @@ void Sift::descriptor_generation() {
         std::vector<float> orientations;
         orientations.reserve(8);
         orientation_assignment(kp, octave, orientations);
+
         for (int j = 0; j < orientations.size(); j++) {
             Descriptor desc;
             const float scale_factor = std::pow(2.0f, kp.octave);//octave变大尺度缩小两倍，特征描述时需要还原回来
@@ -344,7 +364,7 @@ void Sift::generate_grad_ori_images(Sift::Octave *octave) {
  * @param orientations
  */
 void Sift::orientation_assignment(const Sift::Keypoint &kp, const Sift::Octave *octave, std::vector<float> &orientations) {
-    const int nbins = 36;//将2pi分为36个区域
+    const int nbins = 36;
     const float nbinsf = 36.0f;
     float hist[nbins] = {}; //36-bin 直方图
     const int ix = static_cast<int>(kp.col + 0.5f); //+0.5 是为了做到四舍五入
@@ -376,7 +396,15 @@ void Sift::orientation_assignment(const Sift::Keypoint &kp, const Sift::Octave *
             cv::Mat gaussian_kernel = cv::getGaussianKernel(gaussian_window, gaussian_sigma, CV_32F);
             cv::Mat gaussian_kernel2D = gaussian_kernel * gaussian_kernel.t();
             int gaussian_center = static_cast<int>(gaussian_window / 2) + 1;
-            float weight = gaussian_kernel2D.at<float>(gaussian_center + dy, gaussian_center + dx);
+            int gaussian_y = gaussian_center + dy;
+            int gaussian_x = gaussian_center + dx;
+            if (gaussian_y < 0) gaussian_y = 0;
+            else if (gaussian_y >= gaussian_window)gaussian_y = gaussian_window - 1;
+            if (gaussian_x < 0) gaussian_x = 0;
+            else if (gaussian_x >= gaussian_window)gaussian_x = gaussian_window - 1;
+
+
+            float weight = gaussian_kernel2D.at<float>(gaussian_y, gaussian_x);
             int bin = static_cast<int>(nbinsf * go / (2.0f * CV_PI));
             if (bin < 0) bin = 0;
             else if (bin > nbins - 1) bin = nbins - 1;
@@ -399,6 +427,7 @@ void Sift::orientation_assignment(const Sift::Keypoint &kp, const Sift::Octave *
 
     //选出主方向
     float maxh = *std::max_element(hist, hist + nbins);
+
     for (int i = 0; i < nbins; i++) {
         float h0 = hist[(i + nbins - 1) % nbins];
         float h1 = hist[i];
@@ -509,7 +538,6 @@ bool Sift::descriptor_assignment(const Sift::Keypoint &kp, Sift::Descriptor &des
                     for (int t = 0; t < 2; t++) {
                         if (bxi[x] < 0 || bxi[x] >= PXB || byi[y] < 0 || byi[y] >= PXB) continue;
                         int idx = bti[t] + bxi[x] * xstride + byi[y] * ystride;
-                        std::cout << "idx: " << idx << std::endl;
                         desc.data[idx] += contrib * weights[0][x] * weights[1][y] * weights[2][t];
                     }
                 }
@@ -520,25 +548,42 @@ bool Sift::descriptor_assignment(const Sift::Keypoint &kp, Sift::Descriptor &des
 
     //normalize
     float init = 0;
-    for (float i : desc.data) {
+    for (float i: desc.data) {
         init = init + i * i;
     }
-    for (float & i : desc.data) {
+    for (float &i: desc.data) {
         i /= std::sqrt(init);
     }
 
     /* Truncate descriptor values to 0.2. */
-    for (float & i : desc.data) {
+    for (float &i: desc.data) {
         i = std::min(i, 0.2f);
     }
 
     //normalize
-    for (float i : desc.data) {
+    for (float i: desc.data) {
         init = init + i * i;
     }
-    for (float & i : desc.data) {
+    for (float &i: desc.data) {
         i /= std::sqrt(init);
     }
 
     return true;
+}
+
+void Sift::keypoints_show() {
+    cv::Mat img = cv::imread("../data/img1.jpg");
+    for(auto e : _keypoints){
+        int x = static_cast<int>(e.col);
+        int y = static_cast<int>(e.row);
+        float sigma = keypoint_absolute_scale(e);
+        int r = sqrt(2) * sigma;
+        cv::Point center(x,y);
+        cv::Scalar color(0,255,0);
+        cv::circle(img,center,r,color);
+
+
+    }
+    cv::imshow("img",img);
+    cv::waitKey(0);
 }

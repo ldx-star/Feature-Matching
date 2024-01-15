@@ -19,8 +19,7 @@ public:
 
     struct Options {
 
-        Options(void);
-
+        Options();
         /**
          * 每个有效的DoG个数S, 每阶需要DoG图像个数S+2（非极大值抑制，选取值的时候需要考虑上下DoG图像，因此第一个和最后一个DoG图像为无效DoG图像）
          * 需要高斯平滑图像个数 N=S+3 (每两个高斯平滑图像合成一个DoG图像)
@@ -66,7 +65,7 @@ public:
 
 public:
     typedef std::vector<Keypoint> Keypoints;
-    typedef std::vector<Descriptor>  Descriptors;
+    typedef std::vector<Descriptor> Descriptors;
 public:
     explicit Sift(Options const &options);
 
@@ -102,13 +101,17 @@ protected:
 
     void descriptor_generation();
 
-    void generate_grad_ori_images(Octave* octave);
+    void generate_grad_ori_images(Octave *octave);
 
-    void orientation_assignment(const Keypoint &kp,const Octave *octave, std::vector<float> &orientations);
+    void orientation_assignment(const Keypoint &kp, const Octave *octave, std::vector<float> &orientations);
+
     bool descriptor_assignment(const Keypoint &kp, Descriptor &desc, const Octave *octave);
 
     float keypoint_relative_scale(const Keypoint &kp) const;
+
     float keypoint_absolute_scale(const Keypoint &kp) const;
+
+    void keypoints_show();
 //private 只能在类内访问
 private:
     Options _options;
@@ -127,5 +130,6 @@ inline Sift::Options::Options()
           base_blur_sigma(1.6),
           contrast_threshold(-1.0f),
           edge_ratio_threshold(10.0f) {}
+
 
 #endif //FEATURE_MATCHING_SIFT_H
