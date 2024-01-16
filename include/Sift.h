@@ -71,6 +71,8 @@ public:
 
     void set_image(cv::Mat img);
 
+    const Descriptors& get_descriptors()const;
+    const Keypoints& get_keypoints()const;
 
     void process();
 
@@ -130,6 +132,14 @@ inline Sift::Options::Options()
           base_blur_sigma(1.6),
           contrast_threshold(-1.0f),
           edge_ratio_threshold(10.0f) {}
+
+inline const Sift::Descriptors& Sift::get_descriptors() const {
+    return _descriptors;
+}
+
+inline const Sift::Keypoints& Sift::get_keypoints() const {
+    return _keypoints;
+}
 
 
 #endif //FEATURE_MATCHING_SIFT_H

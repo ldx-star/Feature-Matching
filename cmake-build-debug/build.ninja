@@ -56,6 +56,13 @@ build CMakeFiles/lib.dir/src/Sift.cpp.o: CXX_COMPILER__lib_unscanned_Debug /medi
   OBJECT_DIR = CMakeFiles/lib.dir
   OBJECT_FILE_DIR = CMakeFiles/lib.dir/src
 
+build CMakeFiles/lib.dir/src/visualizer.cpp.o: CXX_COMPILER__lib_unscanned_Debug /media/ldx/sd1/feature$ matching/src/visualizer.cpp || cmake_object_order_depends_target_lib
+  DEP_FILE = CMakeFiles/lib.dir/src/visualizer.cpp.o.d
+  FLAGS = -g -std=gnu++11 -fdiagnostics-color=always
+  INCLUDES = -I/usr/local/include/opencv4 -I/usr/include/eigen3
+  OBJECT_DIR = CMakeFiles/lib.dir
+  OBJECT_FILE_DIR = CMakeFiles/lib.dir/src
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target lib
@@ -64,7 +71,7 @@ build CMakeFiles/lib.dir/src/Sift.cpp.o: CXX_COMPILER__lib_unscanned_Debug /medi
 #############################################
 # Link the static library liblib.a
 
-build liblib.a: CXX_STATIC_LIBRARY_LINKER__lib_Debug CMakeFiles/lib.dir/src/Sift.cpp.o
+build liblib.a: CXX_STATIC_LIBRARY_LINKER__lib_Debug CMakeFiles/lib.dir/src/Sift.cpp.o CMakeFiles/lib.dir/src/visualizer.cpp.o
   LANGUAGE_COMPILE_FLAGS = -g
   OBJECT_DIR = CMakeFiles/lib.dir
   POST_BUILD = :
